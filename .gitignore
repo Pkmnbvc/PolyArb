@@ -30,3 +30,7 @@ data/live/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local quantitative research data
+data/recordings/
+
