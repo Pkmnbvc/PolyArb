@@ -6,6 +6,7 @@ from polymarket_us import PolymarketUS
 from polymarket_us.errors import NotFoundError
 
 from polyarb.settlement import get_window_state
+from polyarb.feeds.coinbase import CoinbaseBTCFeed
 
 
 # ---------------------------------------------------------------------
@@ -19,24 +20,67 @@ def quote_value(quote):
     return quote.get("value")
 
 
-def wait_for_order_book(client, slug, attempts=10, delay=3):
+def wait_for_coinbase_tick(coinbase, timeout_seconds=5):
+    """
+    Wait briefly for the Coinbase WebSocket to receive its first BTC tick.
+    """
+
+    started = time.monotonic()
+
+    while (
+        time.monotonic() - started
+        < timeout_seconds
+    ):
+        tick = coinbase.latest()
+
+        if tick is not None:
+            return tick
+
+        time.sleep(0.1)
+
+    return None
+
+
+def wait_for_order_book(
+    client,
+    slug,
+    attempts=10,
+    delay=3,
+):
     """
     Retrieve one coherent full-order-book snapshot.
 
-    We intentionally calculate the best bid and best ask from the SAME
-    book response instead of combining separate REST responses.
+    Best bid and best ask are calculated from the SAME book response.
     """
 
-    for attempt in range(1, attempts + 1):
+    for attempt in range(
+        1,
+        attempts + 1,
+    ):
 
         try:
-            response = client.markets.book(slug)
-            book = response["marketData"]
+            response = (
+                client
+                .markets
+                .book(slug)
+            )
 
-            bids = book.get("bids", [])
-            offers = book.get("offers", [])
+            book = response[
+                "marketData"
+            ]
+
+            bids = book.get(
+                "bids",
+                [],
+            )
+
+            offers = book.get(
+                "offers",
+                [],
+            )
 
             if not bids or not offers:
+
                 print(
                     f"Book exists but has no usable depth "
                     f"({attempt}/{attempts})"
@@ -48,12 +92,16 @@ def wait_for_order_book(client, slug, attempts=10, delay=3):
                 continue
 
             best_bid = max(
-                Decimal(level["px"]["value"])
+                Decimal(
+                    level["px"]["value"]
+                )
                 for level in bids
             )
 
             best_ask = min(
-                Decimal(level["px"]["value"])
+                Decimal(
+                    level["px"]["value"]
+                )
                 for level in offers
             )
 
@@ -61,9 +109,14 @@ def wait_for_order_book(client, slug, attempts=10, delay=3):
                 f"Order book ready on attempt {attempt}."
             )
 
-            return book, best_bid, best_ask
+            return (
+                book,
+                best_bid,
+                best_ask,
+            )
 
         except NotFoundError:
+
             print(
                 f"Order book not ready for {slug} "
                 f"({attempt}/{attempts})"
@@ -72,7 +125,11 @@ def wait_for_order_book(client, slug, attempts=10, delay=3):
             if attempt < attempts:
                 time.sleep(delay)
 
-    return None, None, None
+    return (
+        None,
+        None,
+        None,
+    )
 
 
 # ---------------------------------------------------------------------
@@ -80,22 +137,25 @@ def wait_for_order_book(client, slug, attempts=10, delay=3):
 # ---------------------------------------------------------------------
 
 def find_current_btc_15m(client):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(
+        timezone.utc
+    )
 
     # Examples:
     #
     # 23:17 UTC -> 23:15 window
     # 23:43 UTC -> 23:30 window
-    #
-    # Floor the current time to the beginning of
-    # the current 15-minute interval.
 
-    window_minute = (now.minute // 15) * 15
+    window_minute = (
+        now.minute // 15
+    ) * 15
 
-    expected_window_start = now.replace(
-        minute=window_minute,
-        second=0,
-        microsecond=0,
+    expected_window_start = (
+        now.replace(
+            minute=window_minute,
+            second=0,
+            microsecond=0,
+        )
     )
 
     slug = (
@@ -108,11 +168,17 @@ def find_current_btc_15m(client):
     )
 
     try:
-        response = client.markets.retrieve_by_slug(slug)
+        response = (
+            client
+            .markets
+            .retrieve_by_slug(slug)
+        )
 
     except NotFoundError as exc:
+
         print(
-            f"Current market not available yet: {exc}"
+            f"Current market not available yet: "
+            f"{exc}"
         )
 
         return None
@@ -122,22 +188,30 @@ def find_current_btc_15m(client):
         response,
     )
 
-    terms = market.get(
-        "assetPriceTerms"
-    ) or {}
-
-    window_start_raw = terms.get(
-        "windowStart"
+    terms = (
+        market.get(
+            "assetPriceTerms"
+        )
+        or {}
     )
 
-    window_end_raw = terms.get(
-        "windowEnd"
+    window_start_raw = (
+        terms.get(
+            "windowStart"
+        )
     )
 
-    # Do not continue if Polymarket returned
-    # incomplete market timing metadata.
+    window_end_raw = (
+        terms.get(
+            "windowEnd"
+        )
+    )
 
-    if not window_start_raw or not window_end_raw:
+    if (
+        not window_start_raw
+        or not window_end_raw
+    ):
+
         print(
             "Market exists but window timing "
             "metadata is missing."
@@ -145,23 +219,23 @@ def find_current_btc_15m(client):
 
         return None
 
-    start_dt = datetime.fromisoformat(
-        window_start_raw.replace(
-            "Z",
-            "+00:00",
+    start_dt = (
+        datetime.fromisoformat(
+            window_start_raw.replace(
+                "Z",
+                "+00:00",
+            )
         )
     )
 
-    end_dt = datetime.fromisoformat(
-        window_end_raw.replace(
-            "Z",
-            "+00:00",
+    end_dt = (
+        datetime.fromisoformat(
+            window_end_raw.replace(
+                "Z",
+                "+00:00",
+            )
         )
     )
-
-    # Final safety check:
-    # only return the market if NOW is actually
-    # inside this contract's time window.
 
     if start_dt <= now < end_dt:
         return market
@@ -175,23 +249,55 @@ def find_current_btc_15m(client):
 
 def main():
     print("=" * 72)
-    print("POLYARB v0.1")
+    print("POLYARB v0.2")
     print("BTC 15-Minute Live Market Monitor")
     print("=" * 72)
 
-    client = PolymarketUS()
+    polymarket = PolymarketUS()
+    coinbase = CoinbaseBTCFeed()
 
     try:
 
         # =============================================================
-        # 1. FIND CURRENT 15-MINUTE BTC MARKET
+        # 1. START COINBASE BTC REFERENCE FEED
         # =============================================================
 
+        print(
+            "\nStarting Coinbase BTC-USD reference feed..."
+        )
+
+        coinbase.start()
+
+        coinbase_tick = wait_for_coinbase_tick(
+            coinbase
+        )
+
+        if coinbase_tick is None:
+
+            print(
+                "Coinbase feed connected, but no BTC "
+                "tick arrived yet."
+            )
+
+        else:
+
+            print(
+                f"Coinbase BTC-USD: "
+                f"${coinbase_tick.price}"
+            )
+
+        # =============================================================
+        # 2. FIND CURRENT POLYMARKET BTC 15-MINUTE MARKET
+        # =============================================================
+
+        print()
+
         market = find_current_btc_15m(
-            client
+            polymarket
         )
 
         if not market:
+
             print(
                 "No active BTC 15-minute market found."
             )
@@ -206,8 +312,16 @@ def main():
             "slug"
         ]
 
+        price_to_beat = Decimal(
+            terms[
+                "priceToBeat"
+            ][
+                "value"
+            ]
+        )
+
         # =============================================================
-        # 2. MARKET INFORMATION
+        # 3. MARKET INFORMATION
         # =============================================================
 
         print()
@@ -228,8 +342,8 @@ def main():
         )
 
         print(
-            "PRICE TO BEAT: "
-            f"${float(terms['priceToBeat']['value']):,.2f}"
+            f"PRICE TO BEAT: "
+            f"${price_to_beat:,.2f}"
         )
 
         print(
@@ -243,16 +357,25 @@ def main():
         )
 
         # =============================================================
-        # 3. WINDOW / SETTLEMENT CLOCK
+        # 4. WINDOW / SETTLEMENT CLOCK
         # =============================================================
 
         state = get_window_state(
-            terms["windowStart"],
-            terms["windowEnd"],
+            terms[
+                "windowStart"
+            ],
+            terms[
+                "windowEnd"
+            ],
         )
 
-        print("\nWINDOW STATE")
-        print("-" * 72)
+        print(
+            "\nWINDOW STATE"
+        )
+
+        print(
+            "-" * 72
+        )
 
         print(
             f"Elapsed:       "
@@ -275,18 +398,107 @@ def main():
         )
 
         # =============================================================
-        # 4. RETRIEVE ONE COHERENT ORDER-BOOK SNAPSHOT
+        # 5. COINBASE REFERENCE SNAPSHOT
         # =============================================================
 
-        print("\nWAITING FOR ORDER BOOK")
-        print("-" * 72)
+        coinbase_tick = (
+            coinbase.latest()
+        )
 
-        book, best_bid, best_ask = wait_for_order_book(
-            client,
+        print(
+            "\nBTC REFERENCE"
+        )
+
+        print(
+            "-" * 72
+        )
+
+        if coinbase_tick is None:
+
+            print(
+                "Coinbase BTC-USD: waiting for tick"
+            )
+
+        else:
+
+            captured_at = datetime.now(
+                timezone.utc
+            )
+
+            tick_received_at = (
+                datetime.fromisoformat(
+                    coinbase_tick.received_at
+                )
+            )
+
+            tick_age_ms = (
+                captured_at
+                - tick_received_at
+            ).total_seconds() * 1000
+
+            proxy_distance = (
+                coinbase_tick.price
+                - price_to_beat
+            )
+
+            print(
+                f"Coinbase BTC:  "
+                f"${coinbase_tick.price:,.2f}"
+            )
+
+            print(
+                f"Price to beat: "
+                f"${price_to_beat:,.2f}"
+            )
+
+            print(
+                f"Proxy delta:   "
+                f"${proxy_distance:+,.2f}"
+            )
+
+            print(
+                f"Tick age:      "
+                f"{tick_age_ms:.0f} ms"
+            )
+
+            print(
+                f"Source time:   "
+                f"{coinbase_tick.source_timestamp}"
+            )
+
+            print(
+                f"Received at:   "
+                f"{coinbase_tick.received_at}"
+            )
+
+            print(
+                "NOTE: Coinbase BTC-USD is a proxy; "
+                "Polymarket settles using BRTI."
+            )
+
+        # =============================================================
+        # 6. RETRIEVE ONE COHERENT ORDER-BOOK SNAPSHOT
+        # =============================================================
+
+        print(
+            "\nWAITING FOR ORDER BOOK"
+        )
+
+        print(
+            "-" * 72
+        )
+
+        (
+            book,
+            best_bid,
+            best_ask,
+        ) = wait_for_order_book(
+            polymarket,
             slug,
         )
 
         if book is None:
+
             print()
 
             print(
@@ -302,15 +514,21 @@ def main():
             return
 
         # =============================================================
-        # 5. COHERENT TOP-OF-BOOK DATA
+        # 7. COHERENT TOP-OF-BOOK DATA
         # =============================================================
 
         spread = (
-            best_ask - best_bid
+            best_ask
+            - best_bid
         )
 
-        print("\nCOHERENT BOOK SNAPSHOT")
-        print("-" * 72)
+        print(
+            "\nCOHERENT BOOK SNAPSHOT"
+        )
+
+        print(
+            "-" * 72
+        )
 
         print(
             f"Best bid:      "
@@ -338,17 +556,78 @@ def main():
         )
 
         # =============================================================
-        # 6. FULL ORDER BOOK
+        # 8. COMBINED RESEARCH SNAPSHOT
         # =============================================================
 
-        print("\nORDER BOOK")
-        print("-" * 72)
+        coinbase_tick = (
+            coinbase.latest()
+        )
+
+        print(
+            "\nCOMBINED RESEARCH SNAPSHOT"
+        )
+
+        print(
+            "-" * 72
+        )
+
+        print(
+            f"Time remaining: "
+            f"{state.remaining_seconds:.1f}s"
+        )
+
+        print(
+            f"UP market:      "
+            f"{best_bid} / {best_ask}"
+        )
+
+        if coinbase_tick is not None:
+
+            proxy_distance = (
+                coinbase_tick.price
+                - price_to_beat
+            )
+
+            print(
+                f"BTC proxy:      "
+                f"${coinbase_tick.price:,.2f}"
+            )
+
+            print(
+                f"BRTI start:     "
+                f"${price_to_beat:,.2f}"
+            )
+
+            print(
+                f"Proxy distance: "
+                f"${proxy_distance:+,.2f}"
+            )
+
+        else:
+
+            print(
+                "BTC proxy:      unavailable"
+            )
+
+        # =============================================================
+        # 9. FULL ORDER BOOK
+        # =============================================================
+
+        print(
+            "\nORDER BOOK"
+        )
+
+        print(
+            "-" * 72
+        )
 
         # -------------------------------------------------------------
         # BIDS
         # -------------------------------------------------------------
 
-        print("\nBIDS")
+        print(
+            "\nBIDS"
+        )
 
         bids = sorted(
             book.get(
@@ -356,7 +635,11 @@ def main():
                 [],
             ),
             key=lambda level: Decimal(
-                level["px"]["value"]
+                level[
+                    "px"
+                ][
+                    "value"
+                ]
             ),
             reverse=True,
         )
@@ -364,7 +647,9 @@ def main():
         for level in bids:
 
             price = quote_value(
-                level.get("px")
+                level.get(
+                    "px"
+                )
             )
 
             qty = level.get(
@@ -380,7 +665,9 @@ def main():
         # OFFERS
         # -------------------------------------------------------------
 
-        print("\nOFFERS")
+        print(
+            "\nOFFERS"
+        )
 
         offers = sorted(
             book.get(
@@ -388,14 +675,20 @@ def main():
                 [],
             ),
             key=lambda level: Decimal(
-                level["px"]["value"]
+                level[
+                    "px"
+                ][
+                    "value"
+                ]
             ),
         )
 
         for level in offers:
 
             price = quote_value(
-                level.get("px")
+                level.get(
+                    "px"
+                )
             )
 
             qty = level.get(
@@ -408,7 +701,16 @@ def main():
             )
 
     finally:
-        client.close()
+
+        # Stop the Coinbase WebSocket first.
+        try:
+            coinbase.stop()
+
+        except Exception:
+            pass
+
+        # Then close the Polymarket client.
+        polymarket.close()
 
 
 # ---------------------------------------------------------------------
