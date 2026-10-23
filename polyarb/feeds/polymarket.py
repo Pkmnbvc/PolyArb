@@ -1,4 +1,5 @@
 import asyncio
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -10,6 +11,7 @@ from polymarket_us import PolymarketUS
 # ---------------------------------------------------------------------
 # DATA OBJECTS
 # ---------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class PolymarketLiteTick:
@@ -31,17 +33,31 @@ class PolymarketTradeTick:
 @dataclass(frozen=True)
 class PolymarketBookTick:
     market_slug: str | None
+
     best_bid: Decimal | None
     best_ask: Decimal | None
+
     book_timestamp: str | None
+    market_state: str | None
+
     bid_levels: int
     offer_levels: int
+
+    # Raw quantity-bearing ladder exactly as received from
+    # the Polymarket US WebSocket.
+    bids: tuple[dict, ...]
+    offers: tuple[dict, ...]
+
+    # Exchange-provided statistics retained as raw evidence.
+    stats: dict | None
+
     received_at: str
 
 
 # ---------------------------------------------------------------------
 # HELPERS
 # ---------------------------------------------------------------------
+
 
 def quote_decimal(value):
     """
@@ -62,9 +78,7 @@ def quote_decimal(value):
         return None
 
     try:
-        return Decimal(
-            str(value)
-        )
+        return Decimal(str(value))
 
     except Exception:
         return None
@@ -79,16 +93,12 @@ def best_bid_from_levels(levels):
         )
 
         if price is not None:
-            prices.append(
-                price
-            )
+            prices.append(price)
 
     if not prices:
         return None
 
-    return max(
-        prices
-    )
+    return max(prices)
 
 
 def best_ask_from_levels(levels):
@@ -100,21 +110,18 @@ def best_ask_from_levels(levels):
         )
 
         if price is not None:
-            prices.append(
-                price
-            )
+            prices.append(price)
 
     if not prices:
         return None
 
-    return min(
-        prices
-    )
+    return min(prices)
 
 
 # ---------------------------------------------------------------------
 # REAL-TIME POLYMARKET FEED
 # ---------------------------------------------------------------------
+
 
 class PolymarketMarketFeed:
     """
@@ -122,11 +129,11 @@ class PolymarketMarketFeed:
 
     Maintains the latest:
     - lightweight bid/ask state
-    - full-book top of book
+    - full quantity-bearing order book
     - trade
 
-    It also places every normalized event into an asyncio queue so
-    PolyArb can later record every event instead of polling.
+    Every normalized event is also placed into an asyncio queue so
+    PolyArb can record the event stream causally instead of polling.
     """
 
     def __init__(
@@ -135,29 +142,21 @@ class PolymarketMarketFeed:
         secret_key,
         market_slug,
     ):
-        self.market_slug = (
-            market_slug
-        )
+        self.market_slug = market_slug
 
-        self._lock = (
-            threading.Lock()
-        )
+        self._lock = threading.Lock()
 
         self._latest_lite = None
         self._latest_book = None
         self._latest_trade = None
 
-        self.events = (
-            asyncio.Queue(
-                maxsize=10000
-            )
+        self.events = asyncio.Queue(
+            maxsize=10000
         )
 
-        self._client = (
-            PolymarketUS(
-                key_id=key_id,
-                secret_key=secret_key,
-            )
+        self._client = PolymarketUS(
+            key_id=key_id,
+            secret_key=secret_key,
         )
 
         self._ws = (
@@ -206,7 +205,8 @@ class PolymarketMarketFeed:
         """
         Add an event without allowing a full queue to crash the feed.
 
-        For now we drop the oldest event if the queue becomes full.
+        For now, if the queue is full, drop the oldest event and make
+        one attempt to insert the newest event.
         """
 
         try:
@@ -215,7 +215,6 @@ class PolymarketMarketFeed:
             )
 
         except asyncio.QueueFull:
-
             try:
                 self.events.get_nowait()
 
@@ -238,11 +237,9 @@ class PolymarketMarketFeed:
         self,
         data,
     ):
-        received_at = (
-            datetime.now(
-                timezone.utc
-            ).isoformat()
-        )
+        received_at = datetime.now(
+            timezone.utc
+        ).isoformat()
 
         lite = (
             data.get(
@@ -295,11 +292,9 @@ class PolymarketMarketFeed:
         self,
         data,
     ):
-        received_at = (
-            datetime.now(
-                timezone.utc
-            ).isoformat()
-        )
+        received_at = datetime.now(
+            timezone.utc
+        ).isoformat()
 
         market_data = (
             data.get(
@@ -308,14 +303,18 @@ class PolymarketMarketFeed:
             or {}
         )
 
-        bids = market_data.get(
-            "bids",
-            [],
+        bids = (
+            market_data.get(
+                "bids"
+            )
+            or []
         )
 
-        offers = market_data.get(
-            "offers",
-            [],
+        offers = (
+            market_data.get(
+                "offers"
+            )
+            or []
         )
 
         tick = PolymarketBookTick(
@@ -335,12 +334,33 @@ class PolymarketMarketFeed:
                 "transactTime"
             ),
 
+            market_state=market_data.get(
+                "state"
+            ),
+
             bid_levels=len(
                 bids
             ),
 
             offer_levels=len(
                 offers
+            ),
+
+            # Preserve the complete quantity-bearing ladder.
+            # Deep-copy it so later SDK mutation cannot alter
+            # evidence PolyArb already received.
+            bids=tuple(
+                deepcopy(bids)
+            ),
+
+            offers=tuple(
+                deepcopy(offers)
+            ),
+
+            stats=deepcopy(
+                market_data.get(
+                    "stats"
+                )
             ),
 
             received_at=received_at,
@@ -364,11 +384,9 @@ class PolymarketMarketFeed:
         self,
         data,
     ):
-        received_at = (
-            datetime.now(
-                timezone.utc
-            ).isoformat()
-        )
+        received_at = datetime.now(
+            timezone.utc
+        ).isoformat()
 
         trade = (
             data.get(
@@ -461,7 +479,13 @@ class PolymarketMarketFeed:
         self,
     ):
         try:
-            await self._ws.close()
+            await asyncio.wait_for(
+                self._ws.close(),
+                timeout=2.0,
+            )
+
+        except asyncio.TimeoutError:
+            pass
 
         except Exception:
             pass

@@ -321,6 +321,9 @@ def replay_jsonl(
             # ==================================================
             # Polymarket BOOK
             # ==================================================
+            # ==================================================
+            # Polymarket BOOK
+            # ==================================================
 
             elif event_type == "polymarket_book":
                 bid_levels = _as_int(
@@ -331,43 +334,44 @@ def replay_jsonl(
                     data.get("offer_levels")
                 )
 
+                bids_raw = data.get(
+                    "bids"
+                )
+
+                offers_raw = data.get(
+                    "offers"
+                )
+
                 stats.pm_book_ticks += 1
 
-                engine.update_pm_book(
-                    timestamp,
-                    bid_levels=bid_levels,
-                    offer_levels=offer_levels,
-                )
-
-            # Unknown recorder event types are deliberately ignored by
-            # the state engine rather than guessed at.
-
-            post_state = None
-
-            if capture_post_state:
-                post_state = engine.snapshot(
-                    timestamp
-                )
-
-            if on_event is not None:
-                on_event(
-                    ReplayEvent(
-                        record_number=record_number,
-                        sequence=record.get(
-                            "sequence"
-                        ),
-                        timestamp=timestamp,
-                        event_type=event_type,
-                        btc_impulse_created=(
-                            btc_impulse_created
-                        ),
-                        pm_repricing_direction=(
-                            pm_repricing_direction
-                        ),
-                        pre_state=pre_state,
-                        post_state=post_state,
+                quantity_aware = (
+                    isinstance(
+                        bids_raw,
+                        list,
+                    )
+                    and isinstance(
+                        offers_raw,
+                        list,
                     )
                 )
+
+                if quantity_aware:
+                    engine.update_pm_book(
+                        timestamp,
+                        bid_levels=bid_levels,
+                        offer_levels=offer_levels,
+                        bids_raw=bids_raw,
+                        offers_raw=offers_raw,
+                    )
+
+                else:
+                    # Historical PolyArb recordings contain
+                    # level counts but no quantity ladder.
+                    engine.update_pm_book(
+                        timestamp,
+                        bid_levels=bid_levels,
+                        offer_levels=offer_levels,
+                    )
 
     return ReplayResult(
         engine=engine,

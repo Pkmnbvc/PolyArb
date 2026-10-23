@@ -22,7 +22,7 @@ DATA_DIR = Path("data") / "recordings"
 
 REORDER_WINDOW_SECONDS = 0.250
 DISCOVERY_RETRY_SECONDS = 1.0
-RECORDER_VERSION = "continuous-0.1"
+RECORDER_VERSION = "continuous-0.2"
 
 
 # ---------------------------------------------------------------------
@@ -370,6 +370,67 @@ def empty_causal_state():
         "polymarket_trade": None,
     }
 
+def compact_polymarket_book_state(
+    book,
+):
+    """
+    Compact causal state representation.
+
+    The complete px/qty ladder remains in the polymarket_book EVENT.
+
+    We intentionally do NOT copy the full ladder into
+    state_as_of_event for every subsequent Coinbase/LITE/trade event.
+    """
+
+    return {
+        "market_slug": getattr(
+            book,
+            "market_slug",
+            None,
+        ),
+
+        "best_bid": getattr(
+            book,
+            "best_bid",
+            None,
+        ),
+
+        "best_ask": getattr(
+            book,
+            "best_ask",
+            None,
+        ),
+
+        "book_timestamp": getattr(
+            book,
+            "book_timestamp",
+            None,
+        ),
+
+        "market_state": getattr(
+            book,
+            "market_state",
+            None,
+        ),
+
+        "bid_levels": getattr(
+            book,
+            "bid_levels",
+            None,
+        ),
+
+        "offer_levels": getattr(
+            book,
+            "offer_levels",
+            None,
+        ),
+
+        "received_at": getattr(
+            book,
+            "received_at",
+            None,
+        ),
+    }
 
 def apply_event_to_state(
     state,
@@ -394,8 +455,9 @@ def apply_event_to_state(
     elif event_type == "polymarket_book":
         state[
             "polymarket_book"
-        ] = data
-
+        ] = compact_polymarket_book_state(
+            data
+        )
     elif event_type == "polymarket_trade":
         state[
             "polymarket_trade"
